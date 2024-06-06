@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-
+#单调注意力的能量值
 class Energy(nn.Module):
     def __init__(self, enc_dim=10, dec_dim=10, att_dim=10, init_r=-4):
         """
@@ -14,14 +14,14 @@ class Energy(nn.Module):
         """
         super().__init__()
         self.tanh = nn.Tanh()
-        self.W = nn.Linear(enc_dim, att_dim, bias=False)
-        self.V = nn.Linear(dec_dim, att_dim, bias=False)
-        self.b = nn.Parameter(torch.Tensor(att_dim).normal_())
+        self.W = nn.Linear(enc_dim, att_dim, bias=False) #线性变换 对enc_out的每个h
+        self.V = nn.Linear(dec_dim, att_dim, bias=False) #线性变换 对dec_out的每个H
+        self.b = nn.Parameter(torch.Tensor(att_dim).normal_()) #偏执
 
-        self.v = nn.utils.weight_norm(nn.Linear(10, 1))
-        self.v.weight_g.data = torch.Tensor([1 / att_dim]).sqrt()
+        self.v = nn.utils.weight_norm(nn.Linear(10, 1)) #用于计算energy值函数
+        self.v.weight_g.data = torch.Tensor([1 / att_dim]).sqrt() 
 
-        self.r = nn.Parameter(torch.Tensor([init_r]))
+        self.r = nn.Parameter(torch.Tensor([init_r])) #调整energy值参数
 
     def forward(self, encoder_outputs, decoder_h):
         """
@@ -31,6 +31,7 @@ class Energy(nn.Module):
         Return:
             Energy [batch_size, sequence_length]
         """
+        # 先将 h H线性变换到注意力维度，tanh变换-1，1
         batch_size, sequence_length, enc_dim = encoder_outputs.size()
         encoder_outputs = encoder_outputs.view(-1, enc_dim)
         energy = self.tanh(self.W(encoder_outputs) +
@@ -50,20 +51,20 @@ class MonotonicAttention(nn.Module):
         """
         super().__init__()
 
-        self.monotonic_energy = Energy()
+        self.monotonic_energy = Energy() 
         self.sigmoid = nn.Sigmoid()
-
+    # 添加高斯噪声 促进离散性
     def gaussian_noise(self, *size):
         """Additive gaussian nosie to encourage discreteness"""
         if torch.cuda.is_available():
             return torch.cuda.FloatTensor(*size).normal_()
         else:
             return torch.Tensor(*size).normal_()
-
+    #对数空间计算
     def safe_cumprod(self, x):
         """Numerically stable cumulative product by cumulative sum in log-space"""
         return torch.exp(torch.cumsum(torch.log(torch.clamp(x, min=1e-10, max=1)), dim=1))
-
+    # 实现排他性累积乘积。将累积乘积操作向前移动一个位置，前面填充 1
     def exclusive_cumprod(self, x):
         """Exclusive cumulative product [a, b, c] => [1, a, a * b]
         * TensorFlow: https://www.tensorflow.org/api_docs/python/tf/cumprod
@@ -164,11 +165,12 @@ class MoChA(MonotonicAttention):
         self.chunk_size = chunk_size
         self.chunk_energy = Energy()
         self.softmax = nn.Softmax(dim=1)
-
+     // 先对输入进行填充适应一维卷积
     def moving_sum(self, x, back, forward):
         """Parallel moving sum with 1D Convolution"""
         # Pad window before applying convolution
         # [batch_size,    back + sequence_length + forward]
+        # F.pad见 https://blog.csdn.net/jorg_zhao/article/details/105295686?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522171767659416800213054142%2522%252C%2522scm%2522%253A%252220140713.130102334..%2522%257D&request_id=171767659416800213054142&biz_id=0&utm_medium=distribute.pc_search_result.none-task-blog-2~all~top_positive~default-1-105295686-null-null.142^v100^pc_search_result_base8&utm_term=F.pad&spm=1018.2226.3001.4187
         x_padded = F.pad(x, pad=[back, forward])
 
         # Fake channel dimension for conv1d
@@ -180,7 +182,7 @@ class MoChA(MonotonicAttention):
         if torch.cuda.is_available():
             filters = filters.cuda()
         x_sum = F.conv1d(x_padded, filters)
-
+        # 移除增加的 unsqueeze(1)
         # Remove fake channel dimension
         # [batch_size, sequence_length]
         return x_sum.squeeze(1)
